@@ -1,0 +1,9 @@
+# local configuration and generated state
+/self-runner.conf
+/.self-runner/
+.DS_Store
+
+# agent-log-sync local output
+/.plans/
+/.research/
+/.artifacts/
