@@ -6,7 +6,7 @@
 |---|---|
 | Outbound HTTPS only; no published ports, no host network | rendered `compose.yml` |
 | No Docker socket, no host bind mounts | rendered `compose.yml` |
-| No sudo, `no-new-privileges`, non-root `runner` user | `image/Dockerfile`, compose |
+| No sudo, `no-new-privileges`, non-root `runner` user (default lane) | `image/Dockerfile`, compose |
 | CPU / memory / PID caps per lane | `lane.<name>.*` |
 | Per-lane config volume, work volume and network | rendered `compose.yml` |
 | Base image digest and apt snapshot pinned; snapshot `InRelease` files SHA-256 pinned | `image/Dockerfile` |
@@ -14,6 +14,10 @@
 | `pull_policy: never`: only the reviewed local build runs | rendered `compose.yml` |
 | Registration token via env/prompt/stdin only | `self-runner configure` |
 | Exact Docker context on every call | CLI |
+
+## Privileged lanes (opt-in)
+
+`lane.<name>.sudo=true`, `cap_add` and `devices` widen one lane only; the default lane never receives them. A sudo lane uses its own `<image_tag>-sudo` image and does not get `no-new-privileges` (it would break sudo). `self-runner start` verifies each lane's boundary: non-sudo lanes must fail `sudo -n true`, sudo lanes must pass it. Give a privileged lane only to protected, trusted workflows and never to `pull_request` jobs from untrusted code: sudo inside the container plus `NET_ADMIN` makes a job able to reconfigure networking and read anything the lane can reach. Use separate lanes per trust level.
 
 ## What it does not do
 

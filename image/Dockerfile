@@ -24,13 +24,22 @@ RUN test "$TARGETARCH" = arm64 \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
       ca-certificates \
       curl \
+      docker-compose-v2 \
       git \
+      gnupg \
       jq \
       libatomic1 \
       make \
       openssh-client \
       procps \
       python3 \
+      python3-pip \
+      python3-venv \
+      python3-yaml \
+      ruby \
+      shellcheck \
+      shfmt \
+      sudo \
       tini \
       unzip \
     && rm /etc/apt/apt.conf.d/00snapshot-bootstrap-tls \
@@ -44,8 +53,15 @@ RUN test "$TARGETARCH" = arm64 \
     && /opt/actions-runner/bin/installdependencies.sh \
     && rm /tmp/actions-runner.tar.gz
 
-RUN useradd --create-home --shell /bin/bash runner \
-    && install -d -o runner -g runner /runner /runner/_work
+# sudo is installed but unusable unless the lane opts in (lane.<name>.sudo=true).
+ARG RUNNER_ALLOW_SUDO=false
+RUN case "$RUNNER_ALLOW_SUDO" in true|false) ;; *) exit 2 ;; esac \
+    && useradd --create-home --shell /bin/bash runner \
+    && install -d -o runner -g runner /runner /runner/_work \
+    && if [ "$RUNNER_ALLOW_SUDO" = true ]; then \
+      printf 'runner ALL=(ALL) NOPASSWD: ALL\n' > /etc/sudoers.d/runner; \
+      chmod 0440 /etc/sudoers.d/runner; \
+    fi
 
 COPY --chown=root:root entrypoint.sh /usr/local/bin/runner-entrypoint
 RUN chmod 0755 /usr/local/bin/runner-entrypoint

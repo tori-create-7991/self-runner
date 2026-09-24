@@ -89,7 +89,6 @@ check_lane() {
   lane=$1
   svc=runner-$lane
   name=$lane-1
-  label=$(lane_label "$lane")
 
   if ! dc ps --status running --services | grep -Fx "$svc" >/dev/null; then
     err "$lane: container is not running"
@@ -120,19 +119,21 @@ check_lane() {
     err "gh is required to verify GitHub runner state"
     return 1
   }
-  remote=$(GH_HTTP_TIMEOUT=10 gh api "repos/$SR_REPOSITORY/actions/runners" \
-    --jq ".runners[] | select(.name == \"$name\") | [(.id | tostring), .name, .status, (.busy | tostring), (([.labels[].name] | index(\"$label\")) != null | tostring)] | @tsv") || {
-    err "$lane: cannot query GitHub runner state"
-    return 1
-  }
-  case "$remote" in
-    "${local_id}${tab}${name}${tab}online${tab}false${tab}true") ;;
-    *)
-      err "$lane: not online, idle, and labelled $label: ${remote:-missing}"
+  for label in $(lane_labels "$lane"); do
+    remote=$(GH_HTTP_TIMEOUT=10 gh api "repos/$SR_REPOSITORY/actions/runners" \
+      --jq ".runners[] | select(.name == \"$name\") | [(.id | tostring), .name, .status, (.busy | tostring), (([.labels[].name] | index(\"$label\")) != null | tostring)] | @tsv") || {
+      err "$lane: cannot query GitHub runner state"
       return 1
-      ;;
-  esac
-  printf '%s: online, idle, label %s present\n' "$lane" "$label"
+    }
+    case "$remote" in
+      "${local_id}${tab}${name}${tab}online${tab}false${tab}true") ;;
+      *)
+        err "$lane: not online, idle, and labelled $label: ${remote:-missing}"
+        return 1
+        ;;
+    esac
+  done
+  printf '%s: online, idle, labels %s present\n' "$lane" "$(lane_labels "$lane")"
 }
 
 lanes_of() {
@@ -190,8 +191,13 @@ cmd_configure() {
 cmd_start() {
   prepare
   for lane in $(lanes_of "${1:-}"); do
-    dc run --rm --no-deps --entrypoint /bin/sh "runner-$lane" -c 'test -f /runner/.runner' ||
-      sr_die "$lane is not registered; run 'self-runner configure $lane'"
+    if [ "$(lane_sudo "$lane")" = true ]; then
+      boundary='sudo -n true'
+    else
+      boundary='! sudo -n true'
+    fi
+    dc run --rm --no-deps --entrypoint /bin/sh "runner-$lane" -c "test -f /runner/.runner && $boundary" ||
+      sr_die "$lane is not registered or has an unexpected privilege boundary; run 'self-runner configure $lane' or rebuild"
   done
   for lane in $(lanes_of "${1:-}"); do
     dc up -d "runner-$lane"
@@ -241,7 +247,7 @@ cmd_route() {
       guard
       render
       check_lane "$1" || sr_die "$1 must be online and idle before routing to it"
-      gh variable set "$var" --body "$(lane_label "$1")" --repo "$SR_REPOSITORY"
+      gh variable set "$var" --body "$(lane_primary_label "$1")" --repo "$SR_REPOSITORY"
       ;;
     off)
       gh variable delete "$var" --repo "$SR_REPOSITORY"

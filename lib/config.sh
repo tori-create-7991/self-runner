@@ -43,8 +43,35 @@ lane_var() {
   printf 'SELF_RUNNER_LANE_%s\n' "$(printf '%s' "$1" | tr 'a-z-' 'A-Z_')"
 }
 
+# lane.<n>.label is a comma-separated list; the first label is primary and is
+# the value written to the routing variable.
 lane_label() {
   cfg_get "lane.$1.label"
+}
+
+lane_labels() {
+  printf '%s\n' "$(lane_label "$1")" | tr ',' ' '
+}
+
+lane_primary_label() {
+  lane_label "$1" | cut -d, -f1
+}
+
+lane_sudo() {
+  cfg_get "lane.$1.sudo" false
+}
+
+lane_list() {
+  printf '%s\n' "$(cfg_get "lane.$1.$2")" | tr ',' ' '
+}
+
+# Compose image tag: sudo lanes use a separate image built with sudo enabled.
+lane_image() {
+  if [ "$(lane_sudo "$1")" = true ]; then
+    printf 'self-runner:%s-sudo\n' "$SR_IMAGE_TAG"
+  else
+    printf 'self-runner:%s\n' "$SR_IMAGE_TAG"
+  fi
 }
 
 lane_known() {
@@ -81,9 +108,17 @@ cfg_validate() {
     sr_matches '^[a-z][a-z0-9-]*$' "$_l" || sr_die "invalid lane name '$_l' (use [a-z][a-z0-9-]*)"
     case "$seen" in *" $_l "*) sr_die "duplicate lane '$_l'" ;; esac
     seen="$seen$_l "
-    label=$(lane_label "$_l")
-    [ -n "$label" ] || sr_die "lane.$_l.label is required"
-    sr_matches '^[A-Za-z0-9][A-Za-z0-9._-]*$' "$label" || sr_die "invalid label '$label' for lane $_l"
+    [ -n "$(lane_label "$_l")" ] || sr_die "lane.$_l.label is required"
+    for label in $(lane_labels "$_l"); do
+      sr_matches '^[A-Za-z0-9][A-Za-z0-9._-]*$' "$label" || sr_die "invalid label '$label' for lane $_l"
+    done
+    case "$(lane_sudo "$_l")" in true | false) ;; *) sr_die "lane.$_l.sudo must be true or false" ;; esac
+    for _c in $(lane_list "$_l" cap_add); do
+      sr_matches '^[A-Z][A-Z_]*$' "$_c" || sr_die "invalid capability '$_c' in lane.$_l.cap_add"
+    done
+    for _d in $(lane_list "$_l" devices); do
+      sr_matches '^/dev/[A-Za-z0-9/_.-]+$' "$_d" || sr_die "invalid device '$_d' in lane.$_l.devices"
+    done
     sr_matches '^[0-9]+(\.[0-9]+)?$' "$(cfg_get "lane.$_l.cpus" 2.0)" || sr_die "invalid lane.$_l.cpus"
     sr_matches '^[0-9]+[mg]$' "$(cfg_get "lane.$_l.memory" 3g)" || sr_die "invalid lane.$_l.memory (e.g. 3g)"
     sr_matches '^[0-9]+$' "$(cfg_get "lane.$_l.pids" 512)" || sr_die "invalid lane.$_l.pids"
@@ -94,7 +129,7 @@ cfg_validate() {
   for _k in $(awk '/^[[:space:]]*(#|$)/ { next } { i = index($0, "="); if (i) { k = substr($0, 1, i - 1); gsub(/[[:space:]]/, "", k); print k } }' "$SR_CONFIG"); do
     case "$_k" in
       repository | scope | colima_profile | docker_context | image_tag | lanes) ;;
-      lane.*.label | lane.*.cpus | lane.*.memory | lane.*.pids)
+      lane.*.label | lane.*.cpus | lane.*.memory | lane.*.pids | lane.*.sudo | lane.*.cap_add | lane.*.devices)
         _n=${_k#lane.}
         _n=${_n%.*}
         lane_known "$_n" || sr_die "config key '$_k' refers to a lane not listed in lanes"

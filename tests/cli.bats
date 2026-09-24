@@ -140,3 +140,29 @@ teardown() { teardown_env; }
   [ "$status" -eq 0 ]
   grep -q 'variable delete SELF_RUNNER_LANE_BUILD_X' "$STUB_LOG"
 }
+
+@test "status requires every label of a multi-label lane" {
+  sed -i.bak 's#^lane.ci.label=.*#lane.ci.label=self-runner-ci,extra#' self-runner.conf
+  # stub answers "label present" for every query, so this passes
+  run "$CLI" status ci
+  [ "$status" -eq 0 ]
+  [ "$(grep -c '^gh api' "$STUB_LOG")" -eq 2 ]
+  STUB_GH_REMOTE='42\tci-1\tonline\tfalse\tfalse' run "$CLI" status ci
+  [ "$status" -ne 0 ]
+}
+
+@test "route on writes only the primary label" {
+  sed -i.bak 's#^lane.ci.label=.*#lane.ci.label=self-runner-ci,extra#' self-runner.conf
+  run "$CLI" route ci on
+  [ "$status" -eq 0 ]
+  grep -q 'variable set SELF_RUNNER_LANE_CI --body self-runner-ci --repo' "$STUB_LOG"
+}
+
+@test "start checks the privilege boundary per lane" {
+  run "$CLI" start
+  grep -q "! sudo -n true" "$STUB_LOG"
+  : >"$STUB_LOG"
+  printf 'lane.ci.sudo=true\n' >>self-runner.conf
+  run "$CLI" start
+  grep -q "&& sudo -n true" "$STUB_LOG"
+}

@@ -8,6 +8,7 @@ Hardened GitHub Actions self-hosted runners in a dedicated [Colima](https://gith
 - **Small** – POSIX `sh` CLI and a generated Compose file. No runtime beyond Docker/Colima and `gh`.
 
 > Status: `0.1.0`, early. Supports macOS on Apple Silicon (ARM64) and repository-scoped runners only. Org-level runners, Linux hosts and ephemeral/JIT runners are not implemented.
+> Lanes that need extra privileges (sudo, `NET_ADMIN`, `/dev/net/tun`, e.g. for a Tailscale-based deploy lane) are explicit per-lane opt-ins; see [docs/security.md](docs/security.md).
 
 ## Requirements
 
@@ -52,8 +53,11 @@ runs-on: ${{ vars.SELF_RUNNER_LANE_CI || 'ubuntu-24.04' }}
 | `docker_context` | `colima-<profile>` | exact context every command must use |
 | `image_tag` | required | immutable local release tag; never reuse or retag |
 | `lanes` | required | comma/space separated lane names (`[a-z][a-z0-9-]*`) |
-| `lane.<name>.label` | required | label jobs target; also the value of the routing variable |
+| `lane.<name>.label` | required | comma-separated labels jobs can target; the first is primary and is the value of the routing variable |
 | `lane.<name>.cpus` / `.memory` / `.pids` | `2.0` / `3g` / `512` | container caps |
+| `lane.<name>.sudo` | `false` | passwordless sudo for the `runner` user (builds a separate `<image_tag>-sudo` image) |
+| `lane.<name>.cap_add` | none | comma-separated Linux capabilities, e.g. `NET_ADMIN` |
+| `lane.<name>.devices` | none | comma-separated host device paths, e.g. `/dev/net/tun` |
 
 Lane `ci` maps to variable `SELF_RUNNER_LANE_CI`; `build-x` maps to `SELF_RUNNER_LANE_BUILD_X`. Unknown keys are rejected.
 

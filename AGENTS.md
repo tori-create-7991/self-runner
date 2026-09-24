@@ -23,8 +23,8 @@ make bats
 
 - POSIX `sh` only; run `shfmt -w -i 2 -ci` before committing.
 - Behavior changes need a bats test. Never call real `docker`/`gh`/Colima from tests.
-- Keep the security defaults in `docs/security.md`: no ports, no Docker socket, no host mounts, no sudo, pinned image, token never in argv/files.
+- Keep the security defaults in `docs/security.md`: no ports, no Docker socket, no host mounts, pinned image, token never in argv/files. sudo / cap_add / devices are per-lane opt-ins only; the default lane stays unprivileged.
 - Every docker call goes through `dk()` with the configured context.
-- Scope: repo-level runners on macOS/Colima ARM64. Org scope, Linux hosts, JIT runners are out of scope unless a design says otherwise.
+- Scope: repo-level runners on macOS/Colima ARM64. Org scope, Linux hosts, JIT runners, per-lane extra packages are out of scope unless a design says otherwise.
 - Do not create or publish the GitHub repository, tags or releases without explicit user approval.
 - `.plans/`, `.research/`, `.artifacts/` are git-ignored local output.
