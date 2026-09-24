@@ -1,0 +1,278 @@
+#!/bin/sh
+set -eu
+
+self=$0
+while [ -h "$self" ]; do
+  link=$(readlink "$self")
+  case "$link" in
+    /*) self=$link ;;
+    *) self=$(dirname "$self")/$link ;;
+  esac
+done
+SR_ROOT=$(CDPATH='' cd -- "$(dirname -- "$self")/.." && pwd)
+SR_VERSION=$(cat "$SR_ROOT/VERSION")
+
+# shellcheck source=../lib/config.sh
+. "$SR_ROOT/lib/config.sh"
+# shellcheck source=../lib/render.sh
+. "$SR_ROOT/lib/render.sh"
+
+usage() {
+  cat <<USAGE
+self-runner $SR_VERSION - hardened GitHub Actions self-hosted runners on Colima (Apple Silicon)
+
+usage: self-runner [--config FILE] <command>
+
+commands:
+  init                      write an example self-runner.conf here
+  render                    write .self-runner/compose.yml from the config
+  build                     build the runner image
+  configure <lane>          register a lane (token: \$RUNNER_REGISTRATION_TOKEN, prompt, or stdin)
+  start [lane]              start registered lanes
+  status [lane]             verify lanes are online, idle and labelled on GitHub
+  stop [--force] <lane>     stop an idle lane (--force skips the idle check)
+  route <lane> on|off       set/delete the workflow routing variable
+  version | help
+
+config: --config FILE, \$SELF_RUNNER_CONFIG, or ./self-runner.conf
+USAGE
+}
+
+err() {
+  printf 'self-runner: %s\n' "$*" >&2
+}
+
+dk() {
+  docker --context "$SR_CONTEXT" "$@"
+}
+
+dc() {
+  dk compose -f "$SR_COMPOSE" "$@"
+}
+
+load() {
+  cfg_validate
+  SR_STATE=$(dirname "$SR_CONFIG")/.self-runner
+  SR_COMPOSE=$SR_STATE/compose.yml
+}
+
+# Every docker-touching command runs against the exact configured context, so
+# credentials are never registered in an unrelated VM.
+guard() {
+  dk info >/dev/null 2>&1 ||
+    sr_die "docker context '$SR_CONTEXT' is not reachable (colima start --profile $SR_PROFILE)"
+}
+
+render() {
+  install -d "$SR_STATE"
+  render_compose >"$SR_COMPOSE.tmp"
+  mv "$SR_COMPOSE.tmp" "$SR_COMPOSE"
+}
+
+prepare() {
+  load
+  guard
+  render
+}
+
+require_lane() {
+  [ -n "${1:-}" ] || {
+    usage >&2
+    exit 2
+  }
+  lane_known "$1" || sr_die "unknown lane '$1' (configured: $SR_LANES)"
+}
+
+tab=$(printf '\t')
+
+check_lane() {
+  lane=$1
+  svc=runner-$lane
+  name=$lane-1
+  label=$(lane_label "$lane")
+
+  if ! dc ps --status running --services | grep -Fx "$svc" >/dev/null; then
+    err "$lane: container is not running"
+    return 1
+  fi
+  if ! dc exec -T "$svc" pgrep -f Runner.Listener >/dev/null; then
+    err "$lane: Runner.Listener is not running"
+    return 1
+  fi
+  local_runner=$(dc exec -T "$svc" jq -r '[.agentId, .agentName] | @tsv' /runner/.runner) || {
+    err "$lane: cannot read local runner identity"
+    return 1
+  }
+  local_id=${local_runner%%"$tab"*}
+  local_name=${local_runner#*"$tab"}
+  case "$local_id" in
+    "" | *[!0-9]*)
+      err "$lane: invalid local runner identity: ${local_runner:-missing}"
+      return 1
+      ;;
+  esac
+  if [ "$local_name" != "$name" ]; then
+    err "$lane: local runner name '$local_name' does not match '$name'"
+    return 1
+  fi
+
+  command -v gh >/dev/null 2>&1 || {
+    err "gh is required to verify GitHub runner state"
+    return 1
+  }
+  remote=$(GH_HTTP_TIMEOUT=10 gh api "repos/$SR_REPOSITORY/actions/runners" \
+    --jq ".runners[] | select(.name == \"$name\") | [(.id | tostring), .name, .status, (.busy | tostring), (([.labels[].name] | index(\"$label\")) != null | tostring)] | @tsv") || {
+    err "$lane: cannot query GitHub runner state"
+    return 1
+  }
+  case "$remote" in
+    "${local_id}${tab}${name}${tab}online${tab}false${tab}true") ;;
+    *)
+      err "$lane: not online, idle, and labelled $label: ${remote:-missing}"
+      return 1
+      ;;
+  esac
+  printf '%s: online, idle, label %s present\n' "$lane" "$label"
+}
+
+lanes_of() {
+  if [ -n "${1:-}" ]; then
+    require_lane "$1"
+    printf '%s\n' "$1"
+  else
+    # shellcheck disable=SC2086 # lane names are validated words
+    printf '%s\n' $SR_LANES
+  fi
+}
+
+cmd_init() {
+  [ ! -e "$SR_CONFIG" ] || sr_die "$SR_CONFIG already exists"
+  cp "$SR_ROOT/examples/self-runner.conf" "$SR_CONFIG"
+  printf 'wrote %s - set repository, then: self-runner build\n' "$SR_CONFIG"
+}
+
+cmd_render() {
+  load
+  render
+  printf '%s\n' "$SR_COMPOSE"
+}
+
+cmd_build() {
+  prepare
+  dc build
+}
+
+cmd_configure() {
+  prepare
+  require_lane "${1:-}"
+  if [ -z "${RUNNER_REGISTRATION_TOKEN:-}" ]; then
+    if [ -t 0 ]; then
+      trap 'stty echo' EXIT INT TERM
+      printf 'Registration token: ' >&2
+      stty -echo
+      IFS= read -r RUNNER_REGISTRATION_TOKEN || true
+      stty echo
+      trap - EXIT INT TERM
+      printf '\n' >&2
+    else
+      IFS= read -r RUNNER_REGISTRATION_TOKEN || true
+    fi
+  fi
+  [ -n "${RUNNER_REGISTRATION_TOKEN:-}" ] || sr_die "registration token is empty"
+  # Exported by name only: the value never appears in argv or on disk.
+  export RUNNER_REGISTRATION_TOKEN
+  dc run --rm --no-deps \
+    -e "RUNNER_REPOSITORY_URL=https://github.com/$SR_REPOSITORY" \
+    -e RUNNER_REGISTRATION_TOKEN \
+    "runner-$1" configure
+}
+
+cmd_start() {
+  prepare
+  for lane in $(lanes_of "${1:-}"); do
+    dc run --rm --no-deps --entrypoint /bin/sh "runner-$lane" -c 'test -f /runner/.runner' ||
+      sr_die "$lane is not registered; run 'self-runner configure $lane'"
+  done
+  for lane in $(lanes_of "${1:-}"); do
+    dc up -d "runner-$lane"
+  done
+}
+
+cmd_status() {
+  prepare
+  rc=0
+  for lane in $(lanes_of "${1:-}"); do
+    check_lane "$lane" || rc=1
+  done
+  return "$rc"
+}
+
+cmd_stop() {
+  force=0
+  if [ "${1:-}" = --force ]; then
+    force=1
+    shift
+  fi
+  [ "$#" -eq 1 ] || {
+    usage >&2
+    exit 2
+  }
+  prepare
+  require_lane "$1"
+  if [ "$force" -eq 0 ]; then
+    check_lane "$1" || sr_die "$1 is not confirmed idle; route jobs away and retry, or use --force for incident recovery"
+  else
+    err "warning: forcing $1 stop without an idle check"
+  fi
+  dc stop "runner-$1"
+}
+
+cmd_route() {
+  [ "$#" -eq 2 ] || {
+    usage >&2
+    exit 2
+  }
+  load
+  require_lane "$1"
+  var=$(lane_var "$1")
+  case "$2" in
+    on)
+      # Routing jobs to a lane that is not idle would leave them queued.
+      guard
+      render
+      check_lane "$1" || sr_die "$1 must be online and idle before routing to it"
+      gh variable set "$var" --body "$(lane_label "$1")" --repo "$SR_REPOSITORY"
+      ;;
+    off)
+      gh variable delete "$var" --repo "$SR_REPOSITORY"
+      ;;
+    *) sr_die "usage: self-runner route <lane> on|off" ;;
+  esac
+}
+
+SR_CONFIG=${SELF_RUNNER_CONFIG:-./self-runner.conf}
+if [ "${1:-}" = --config ]; then
+  [ -n "${2:-}" ] || sr_die "--config needs a file"
+  SR_CONFIG=$2
+  shift 2
+fi
+
+cmd=${1:-help}
+[ "$#" -eq 0 ] || shift
+case "$cmd" in
+  init) cmd_init ;;
+  render) cmd_render ;;
+  build) cmd_build ;;
+  configure) cmd_configure "$@" ;;
+  start) cmd_start "$@" ;;
+  status) cmd_status "$@" ;;
+  stop) cmd_stop "$@" ;;
+  route) cmd_route "$@" ;;
+  version | --version) printf '%s\n' "$SR_VERSION" ;;
+  help | --help | -h) usage ;;
+  *)
+    err "unknown command '$cmd'"
+    usage >&2
+    exit 2
+    ;;
+esac

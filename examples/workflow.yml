@@ -1,0 +1,11 @@
+# The lane variable holds the runs-on label. Unset or empty => GitHub-hosted.
+# Toggle with: self-runner route ci on|off
+name: ci
+on:
+  pull_request:
+jobs:
+  test:
+    runs-on: ${{ vars.SELF_RUNNER_LANE_CI || 'ubuntu-24.04' }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: make test
