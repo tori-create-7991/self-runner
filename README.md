@@ -18,7 +18,7 @@ Hardened GitHub Actions self-hosted runners in a dedicated [Colima](https://gith
 ## Quick start
 
 ```sh
-git clone https://github.com/OWNER/self-runner && cd self-runner
+git clone https://github.com/tori-create-7991/self-runner && cd self-runner
 ln -s "$PWD/bin/self-runner" /usr/local/bin/self-runner   # optional
 
 colima start --profile self-runner --arch aarch64 --cpu 4 --memory 8
