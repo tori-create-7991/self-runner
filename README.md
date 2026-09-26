@@ -61,6 +61,10 @@ runs-on: ${{ vars.SELF_RUNNER_LANE_CI || 'ubuntu-24.04' }}
 
 Lane `ci` maps to variable `SELF_RUNNER_LANE_CI`; `build-x` maps to `SELF_RUNNER_LANE_BUILD_X`. Unknown keys are rejected.
 
+## Multiple repositories
+
+Runners are registered per repository (`scope=repo`), so each additional repository needs its own registration token and its own `self-runner configure`. Keep one config per repository and select it with `--config FILE` or `SELF_RUNNER_CONFIG`. Give each config a distinct `colima_profile` (or run them in separate directories with distinct lane names) so containers and volumes do not collide. Organization-level runners, which register once for every repository in an org, are not implemented yet.
+
 ## Commands
 
 `init`, `render`, `build`, `configure <lane>`, `start [lane]`, `status [lane]`, `stop [--force] <lane>`, `route <lane> on|off`, `version`, `help`. Use `--config FILE` or `SELF_RUNNER_CONFIG` to pick another config.
