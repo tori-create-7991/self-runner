@@ -22,7 +22,7 @@ git clone https://github.com/tori-create-7991/self-runner && cd self-runner
 ln -s "$PWD/bin/self-runner" /usr/local/bin/self-runner   # optional
 
 colima start --profile self-runner --arch aarch64 --cpu 4 --memory 8
-docker context use <your previous context>   # colima start switches the active context
+docker context use <your previous context>   # colima start switches the active context; see `docker context ls`
 self-runner init                  # writes ./self-runner.conf; edit `repository=`
 self-runner build
 
@@ -68,17 +68,26 @@ Lane `ci` maps to variable `SELF_RUNNER_LANE_CI`; `build-x` maps to `SELF_RUNNER
 
 Set `user=auto` (or your login) and each person runs their own runner on their own Mac, identified by GitHub login:
 
-- runner name `<login>-<lane>-1`; labels are the lane labels plus a personal one, `<first label>-<login>`
+- runner name `<login>--<lane>-1`; labels are the lane labels plus a personal one, `<first label>--<login>` (`--` cannot occur in a GitHub login, so two people can never collide)
 - the routing variable `SELF_RUNNER_LANE_<NAME>` is an **on-duty pointer**: whoever last ran `self-runner route <lane> on` receives all new jobs of that lane. Workflows stay `runs-on: ${{ vars.SELF_RUNNER_LANE_CI || 'ubuntu-24.04' }}`.
 
 ```sh
 self-runner route ci on            # take duty (refused if someone else holds it)
 self-runner route ci on --take     # switch duty to you
 self-runner route ci off           # release; only deletes routing you hold
-self-runner status                 # also prints who holds routing
+self-runner route ci off --force   # clear routing held by anyone (stale or departed holder)
+self-runner status                 # also prints who holds routing, and flags an offline holder
 ```
 
-With `auto_route=true`, `self-runner start` takes duty once your runner is online and `stop` releases it. Jobs already queued keep the label they were created with, so the previous holder should stay up until `status` shows idle.
+With `auto_route=true`, `self-runner start` takes duty once your runner is online (exit status 1 if it could not) and `stop` releases routing first, waits for the lane to drain, then stops (it aborts if routing cannot be released; `--force` stops anyway). Jobs already queued keep the label they were created with, so the previous holder should stay up until `status` shows idle.
+
+Failures reading the routing variable are never treated as "unset": `route on`/`off` stop and `status` prints `routing unknown`.
+
+**Permissions.** Registering a runner needs a repository registration token (repo admin), and `route` writes repository variables (write/admin access to Actions variables). Each team member needs both on the repository.
+
+**Changing `user`.** The runner name and labels are fixed at registration. After switching `user` (including `none` ↔ a login, or an `auto` login that changed after a rename), `start`/`status` report a name mismatch: `route <lane> off`, `stop`, delete the old runner in *Settings → Actions → Runners*, remove the lane's config volume, then `configure` again. `user=auto` asks `gh` for the login on every command; after registering, pin it with `user=<login>` for unattended use.
+
+**Leaving the team.** Release or clear routing (`route <lane> off --force`), delete the person's runners in *Settings → Actions → Runners*, remove their volumes on their Mac, then drop their repository access.
 
 This is *not* per-trigger routing: the person on duty runs everyone's jobs, including pull-request code, so use it only inside a trusted team (see [docs/security.md](docs/security.md)). `user=none` keeps the single-runner behavior.
 

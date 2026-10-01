@@ -59,16 +59,22 @@ lane_primary_label() {
 
 # With a user, the runner is named <login>-<lane>-1 and also carries a personal
 # label <primary>-<login>; that label is what the routing variable points at.
+# "--" joins login and lane: a GitHub login cannot contain it, so two different
+# (login, lane) pairs can never produce the same name or label.
+runner_name_for() {
+  printf '%s--%s-1\n' "$2" "$1"
+}
+
 lane_runner_name() {
   if [ -n "$SR_USER" ]; then
-    printf '%s-%s-1\n' "$SR_USER" "$1"
+    runner_name_for "$1" "$SR_USER"
   else
     printf '%s-1\n' "$1"
   fi
 }
 
 lane_personal_label() {
-  [ -z "$SR_USER" ] || printf '%s-%s\n' "$(lane_primary_label "$1")" "$SR_USER"
+  [ -z "$SR_USER" ] || printf '%s--%s\n' "$(lane_primary_label "$1")" "$SR_USER"
 }
 
 # Space-separated labels the runner registers with and status verifies.
@@ -88,10 +94,16 @@ lane_route_value() {
 
 # Login that holds routing, derived from a personal label; empty if unknown.
 lane_holder_of() {
-  _pre="$(lane_primary_label "$1")-"
+  _pre="$(lane_primary_label "$1")--"
   case "$2" in
     "$_pre"?*) printf '%s\n' "${2#"$_pre"}" ;;
   esac
+}
+
+# GitHub logins, plus "_" for Enterprise Managed Users; "--" is reserved as the separator.
+login_ok() {
+  sr_matches '^[A-Za-z0-9]([A-Za-z0-9_-]{0,37}[A-Za-z0-9])?$' "$1" || return 1
+  case "$1" in *--*) return 1 ;; esac
 }
 
 lane_sudo() {
@@ -136,10 +148,10 @@ cfg_validate() {
       command -v gh >/dev/null 2>&1 || sr_die "user=auto needs gh (or set user=<github-login>)"
       SR_USER=$(gh api user --jq .login 2>/dev/null | tr '[:upper:]' '[:lower:]')
       [ -n "$SR_USER" ] || sr_die "cannot resolve your GitHub login (run 'gh auth login' or set user=<github-login>)"
+      login_ok "$SR_USER" || sr_die "gh returned an unusable login '$SR_USER'; set user=<github-login>"
       ;;
     *)
-      sr_matches '^[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?$' "$SR_USER_SETTING" ||
-        sr_die "invalid user '$SR_USER_SETTING' (none, auto, or a GitHub login)"
+      login_ok "$SR_USER_SETTING" || sr_die "invalid user '$SR_USER_SETTING' (none, auto, or a GitHub login)"
       SR_USER=$(printf '%s' "$SR_USER_SETTING" | tr '[:upper:]' '[:lower:]')
       ;;
   esac

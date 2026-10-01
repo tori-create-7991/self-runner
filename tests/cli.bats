@@ -72,12 +72,12 @@ teardown() { teardown_env; }
 }
 
 @test "status fails when the runner is busy" {
-  STUB_GH_REMOTE='42\tci-1\tonline\ttrue\ttrue' run "$CLI" status ci
+  STUB_GH_REMOTE='42\tci-1\tonline\ttrue\tself-runner-ci' run "$CLI" status ci
   [ "$status" -ne 0 ]
 }
 
 @test "status fails when the label is missing" {
-  STUB_GH_REMOTE='42\tci-1\tonline\tfalse\tfalse' run "$CLI" status ci
+  STUB_GH_REMOTE='42\tci-1\tonline\tfalse\tother' run "$CLI" status ci
   [ "$status" -ne 0 ]
 }
 
@@ -98,7 +98,7 @@ teardown() { teardown_env; }
 }
 
 @test "stop refuses when the lane is not idle" {
-  STUB_GH_REMOTE='42\tci-1\tonline\ttrue\ttrue' run "$CLI" stop ci
+  STUB_GH_REMOTE='42\tci-1\tonline\ttrue\tself-runner-ci' run "$CLI" stop ci
   [ "$status" -ne 0 ]
   ! grep -q ' stop ' "$STUB_LOG"
 }
@@ -107,6 +107,17 @@ teardown() { teardown_env; }
   run "$CLI" stop ci
   [ "$status" -eq 0 ]
   grep -q 'stop runner-ci' "$STUB_LOG"
+}
+
+@test "status verifies the runner name and labels in the query it sends" {
+  run "$CLI" status ci
+  grep -q 'select(.name == "ci-1")' "$STUB_LOG"
+}
+
+@test "user=none status prints plain routing without a you marker" {
+  STUB_VAR=self-runner-ci run "$CLI" status ci
+  [[ "$output" == *"ci: routing -> self-runner-ci"* ]]
+  [[ "$output" != *"(you)"* ]]
 }
 
 @test "stop --force skips the idle check" {
@@ -143,17 +154,17 @@ teardown() { teardown_env; }
 
 @test "status requires every label of a multi-label lane" {
   sed -i.bak 's#^lane.ci.label=.*#lane.ci.label=self-runner-ci,extra#' self-runner.conf
-  # stub answers "label present" for every query, so this passes
-  run "$CLI" status ci
+  STUB_GH_REMOTE='42\tci-1\tonline\tfalse\tself-runner-ci' run "$CLI" status ci
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"lacks label extra"* ]]
+  STUB_GH_REMOTE='42\tci-1\tonline\tfalse\textra,self-runner-ci' run "$CLI" status ci
   [ "$status" -eq 0 ]
   [ "$(grep -c '^gh api' "$STUB_LOG")" -eq 2 ]
-  STUB_GH_REMOTE='42\tci-1\tonline\tfalse\tfalse' run "$CLI" status ci
-  [ "$status" -ne 0 ]
 }
 
 @test "route on writes only the primary label" {
   sed -i.bak 's#^lane.ci.label=.*#lane.ci.label=self-runner-ci,extra#' self-runner.conf
-  run "$CLI" route ci on
+  STUB_GH_REMOTE='42\tci-1\tonline\tfalse\tself-runner-ci,extra' run "$CLI" route ci on
   [ "$status" -eq 0 ]
   grep -q 'variable set SELF_RUNNER_LANE_CI --body self-runner-ci --repo' "$STUB_LOG"
 }
