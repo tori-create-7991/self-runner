@@ -199,6 +199,15 @@ teardown() { teardown_env; }
   [[ "$output" == *"routing unknown"* ]]
 }
 
+@test "real gh words an inaccessible repository as 'was not found'; that is still an error" {
+  STUB_REPO_404=1 run "$CLI" route ci off
+  [ "$status" -ne 0 ]
+  ! grep -q 'variable delete' "$STUB_LOG"
+  STUB_REPO_404=1 run "$CLI" status ci
+  [[ "$output" == *"routing unknown"* ]]
+  [[ "$output" != *"routing off"* ]]
+}
+
 @test "route on takes free routing with the personal label" {
   run "$CLI" route ci on
   [ "$status" -eq 0 ]

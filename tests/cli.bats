@@ -159,7 +159,7 @@ teardown() { teardown_env; }
   [[ "$output" == *"lacks label extra"* ]]
   STUB_GH_REMOTE='42\tci-1\tonline\tfalse\textra,self-runner-ci' run "$CLI" status ci
   [ "$status" -eq 0 ]
-  [ "$(grep -c '^gh api' "$STUB_LOG")" -eq 2 ]
+  [ "$(grep -c 'actions/runners' "$STUB_LOG")" -eq 2 ]
 }
 
 @test "route on writes only the primary label" {

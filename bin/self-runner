@@ -279,16 +279,15 @@ route_current() {
     return 0
   fi
   case "$_out" in
-    *"was not found"*) return 0 ;;
-    *"404"*)
-      # A 404 also means "repository not visible to this token": only treat it
-      # as an unset variable if the repository itself is reachable.
+    *"was not found"* | *"404"*)
+      # gh reports every 404 on this endpoint as "was not found", including a
+      # repository the token cannot see: only call it unset if the repo is reachable.
       if gh api "repos/$SR_REPOSITORY" --jq .full_name >/dev/null 2>&1; then
         return 0
       fi
       ;;
   esac
-  err "cannot read routing variable $(lane_var "$1"): $_out"
+  err "cannot read routing variable $(lane_var "$1"): $(route_sanitize "$_out")"
   return 1
 }
 
