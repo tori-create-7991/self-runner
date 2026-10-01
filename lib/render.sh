@@ -49,8 +49,8 @@ YAML
     mem_limit: $(cfg_get "lane.$_l.memory" 3g)
     pids_limit: $(cfg_get "lane.$_l.pids" 512)
     environment:
-      RUNNER_NAME: $_l-1
-      RUNNER_LABEL: $(lane_label "$_l")
+      RUNNER_NAME: $(lane_runner_name "$_l")
+      RUNNER_LABEL: $(lane_register_labels "$_l" | tr ' ' ',')
     volumes:
       - $_l-config:/runner
       - $_l-work:/runner/_work

@@ -19,6 +19,15 @@
 
 `lane.<name>.sudo=true`, `cap_add` and `devices` widen one lane only; the default lane never receives them. A sudo lane uses its own `<image_tag>-sudo` image and does not get `no-new-privileges` (it would break sudo). `self-runner start` verifies each lane's boundary: non-sudo lanes must fail `sudo -n true`, sudo lanes must pass it. Give a privileged lane only to protected, trusted workflows and never to `pull_request` jobs from untrusted code: sudo inside the container plus `NET_ADMIN` makes a job able to reconfigure networking and read anything the lane can reach. Use separate lanes per trust level.
 
+## Team (on-duty) routing
+
+With `user=` set, the routing variable names the runner on duty and that person's Mac runs every job of the lane, whoever triggered it. Consequences:
+
+- A teammate's pull-request code runs on the on-duty person's Mac. Use this only among people who already trust each other with that machine, and keep credentials off it.
+- Labels are not authentication. Anyone who can change a workflow can target a personal label such as `self-runner-ci-alice`; for forks, require approval for outside collaborators and keep `pull_request` workflows from untrusted forks off self-hosted labels (for example guard with `github.event.pull_request.head.repo.fork == false`).
+- Routing is last-writer-wins. `route on` refuses to displace another holder without `--take`, and `route off` only releases routing you hold, but the compare-then-write is not atomic.
+- If the on-duty runner goes offline, new jobs queue until someone takes duty or releases routing.
+
 ## What it does not do
 
 - It does not make untrusted code safe. Do not route `pull_request` jobs from forks or untrusted contributors to a lane.

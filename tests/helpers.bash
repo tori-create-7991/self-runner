@@ -25,8 +25,10 @@ STUB
   cat >"$STUB_BIN/gh" <<'STUB'
 #!/bin/sh
 printf 'gh %s\n' "$*" >>"$STUB_LOG"
-case "$1" in
-  api) printf '%b\n' "${STUB_GH_REMOTE-42\tci-1\tonline\tfalse\ttrue}" ;;
+case "$*" in
+  "api user"*) printf '%s\n' "${STUB_GH_USER-Alice}" ;;
+  "variable get"*) [ -z "${STUB_VAR+x}" ] && exit 1 || printf '%s\n' "$STUB_VAR" ;;
+  api*) printf '%b\n' "${STUB_GH_REMOTE-42\tci-1\tonline\tfalse\ttrue}" ;;
 esac
 exit 0
 STUB
