@@ -44,7 +44,7 @@ case "$*" in
       exit 1
     fi
     if [ -f "$VF" ]; then cat "$VF"; else
-      echo "variable $3 was not found" >&2
+      if [ -n "${STUB_NOTFOUND_404:-}" ]; then echo "HTTP 404: Not Found" >&2; else echo "variable $3 was not found" >&2; fi
       exit 1
     fi
     ;;
@@ -55,6 +55,11 @@ case "$*" in
     ;;
   "variable delete"*)
     init
+    # Real gh exits non-zero when the variable does not exist.
+    [ -f "$VF" ] || {
+      echo "HTTP 404: Not Found" >&2
+      exit 1
+    }
     rm -f "$VF"
     ;;
   api*"| .status") printf '%s\n' "${STUB_HOLDER_STATUS-}" ;;

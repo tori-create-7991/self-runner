@@ -140,14 +140,14 @@ teardown() { teardown_env; }
 }
 
 @test "route off deletes the variable without needing docker" {
-  STUB_DOCKER_DOWN=1 run "$CLI" route ci off
+  STUB_VAR=self-runner-ci STUB_DOCKER_DOWN=1 run "$CLI" route ci off
   [ "$status" -eq 0 ]
   grep -q 'gh variable delete SELF_RUNNER_LANE_CI --repo octo/demo' "$STUB_LOG"
 }
 
 @test "lane names map to upper snake variables" {
   sed -i.bak 's#^lanes=.*#lanes=build-x#; s#^lane.ci.label=#lane.build-x.label=#' self-runner.conf
-  STUB_DOCKER_DOWN=1 run "$CLI" route build-x off
+  STUB_VAR=self-runner-ci STUB_DOCKER_DOWN=1 run "$CLI" route build-x off
   [ "$status" -eq 0 ]
   grep -q 'variable delete SELF_RUNNER_LANE_BUILD_X' "$STUB_LOG"
 }
@@ -176,4 +176,30 @@ teardown() { teardown_env; }
   printf 'lane.ci.sudo=true\n' >>self-runner.conf
   run "$CLI" start
   grep -q "&& sudo -n true" "$STUB_LOG"
+}
+
+@test "user=none route off treats an already-unset variable as success" {
+  run "$CLI" route ci off
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"routing already off"* ]]
+  ! grep -q 'variable delete' "$STUB_LOG"
+}
+
+@test "user=none auto_route start takes routing and stop releases it" {
+  printf 'auto_route=true\n' >>self-runner.conf
+  run "$CLI" start
+  [ "$status" -eq 0 ]
+  grep -q 'variable set SELF_RUNNER_LANE_CI --body self-runner-ci' "$STUB_LOG"
+  run "$CLI" stop ci
+  [ "$status" -eq 0 ]
+  grep -q 'variable delete SELF_RUNNER_LANE_CI' "$STUB_LOG"
+  run "$CLI" stop ci
+  [ "$status" -eq 0 ]
+}
+
+@test "stop of a lane that is not running does not wait for it to drain" {
+  STUB_RUNNING= run "$CLI" stop ci
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"not running"* ]]
+  grep -q 'stop runner-ci' "$STUB_LOG"
 }

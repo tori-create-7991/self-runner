@@ -132,6 +132,35 @@ teardown() { teardown_env; }
   [[ "$output" == *"routing -> bob"* ]]
   [[ "$output" == *"runner offline"* ]]
   [[ "$output" == *"route ci off --force"* ]]
+  grep -q 'select(.name == "bob--ci-1")' "$STUB_LOG"
+}
+
+@test "status says a holder whose runner is not registered at all" {
+  STUB_VAR=self-runner-ci--bob STUB_HOLDER_STATUS= run "$CLI" status ci
+  [[ "$output" == *"runner not registered"* ]]
+}
+
+@test "a routing value that is not a personal label is shown as is and not looked up" {
+  STUB_VAR=custom-label run "$CLI" status ci
+  [[ "$output" == *"routing -> custom-label"* ]]
+  ! grep -q '| .status' "$STUB_LOG"
+}
+
+@test "a hostile routing value is never spliced into a runner lookup" {
+  STUB_VAR='self-runner-ci--x") | $ENV #' run "$CLI" status ci
+  [ "$status" -eq 0 ]
+  ! grep -q 'ENV' "$STUB_LOG"
+}
+
+@test "control characters in a routing value are stripped before printing" {
+  STUB_VAR=$(printf 'bad\033[31mvalue') run "$CLI" status ci
+  [[ "$output" != *$'\033'* ]]
+}
+
+@test "variable not found in the HTTP 404 form is still treated as unset" {
+  STUB_NOTFOUND_404=1 run "$CLI" route ci on
+  [ "$status" -eq 0 ]
+  grep -q 'variable set' "$STUB_LOG"
 }
 
 @test "status says routing is unknown instead of off when GitHub cannot be read" {
@@ -211,6 +240,18 @@ teardown() { teardown_env; }
   [ "$status" -eq 0 ]
   [[ "$output" == *"clearing routing held by bob"* ]]
   grep -q 'variable delete SELF_RUNNER_LANE_CI' "$STUB_LOG"
+}
+
+@test "route off --force when routing is already off says so" {
+  run "$CLI" route ci off --force
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"routing already off"* ]]
+}
+
+@test "route off --force deletes anyway, with a warning, when the variable cannot be read" {
+  STUB_VAR_ERROR=1 run "$CLI" route ci off --force
+  [[ "$output" == *"could not read routing"* ]]
+  grep -q 'variable delete' "$STUB_LOG"
 }
 
 @test "route off --force works without any runner or docker" {
@@ -299,6 +340,29 @@ teardown() { teardown_env; }
   STUB_VAR=self-runner-ci--alice run "$CLI" stop ci
   [ "$status" -eq 0 ]
   [[ "$output" == *"routing still points at ci"* ]]
+}
+
+@test "a failed gh variable set is reported, not swallowed" {
+  printf 'auto_route=true\n' >>self-runner.conf
+  sed -i.bak '/^user=/d' self-runner.conf
+  mkdir -p fail && cat >fail/gh <<'STUB'
+#!/bin/sh
+case "$*" in
+  "variable set"*) echo "HTTP 403: forbidden" >&2; exit 1 ;;
+  "variable get"*) echo "variable X was not found" >&2; exit 1 ;;
+  api*) printf '42\tci-1\tonline\tfalse\tself-runner-ci\n' ;;
+esac
+STUB
+  chmod +x fail/gh
+  STUB_LOCAL_NAME=ci-1 PATH="$PWD/fail:$PATH" run "$CLI" start
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"routing was not taken"* ]]
+}
+
+@test "start with auto_route prints why a lane never came online" {
+  printf 'auto_route=true\n' >>self-runner.conf
+  STUB_GH_REMOTE='' run "$CLI" start
+  [[ "$output" == *"not online and idle on GitHub"* ]]
 }
 
 @test "invalid auto_route is rejected" {

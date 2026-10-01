@@ -96,7 +96,11 @@ lane_route_value() {
 lane_holder_of() {
   _pre="$(lane_primary_label "$1")--"
   case "$2" in
-    "$_pre"?*) printf '%s\n' "${2#"$_pre"}" ;;
+    "$_pre"?*)
+      # The value is attacker-controlled (anyone who can write variables), and
+      # the result is spliced into a jq filter: only a valid login is a holder.
+      login_ok "${2#"$_pre"}" && printf '%s\n' "${2#"$_pre"}"
+      ;;
   esac
 }
 

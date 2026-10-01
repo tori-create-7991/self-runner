@@ -259,8 +259,10 @@ cmd_stop() {
   elif [ -n "$SR_USER" ] && route_current "$1" && [ "$SR_ROUTE_CUR" = "$(lane_route_value "$1")" ]; then
     err "warning: routing still points at $1; run 'self-runner route $1 off' or jobs will queue"
   fi
-  if [ "$force" -eq 0 ]; then
-    wait_ready "$1" || sr_die "$1 is not confirmed online and idle; retry once it drains, or use --force for incident recovery"
+  if [ "$force" -eq 0 ] && ! dc ps --status running --services | grep -Fx "runner-$1" >/dev/null; then
+    err "$1 is not running; nothing to drain"
+  elif [ "$force" -eq 0 ]; then
+    wait_ready "$1" || sr_die "$1 is not confirmed online and idle (routing was already released if auto_route=true); retry once it drains, or use --force for incident recovery"
   else
     err "warning: forcing $1 stop without an idle check"
   fi
@@ -283,8 +285,9 @@ route_current() {
   return 1
 }
 
+# Holder login, or the raw value (control characters stripped) if it is not one.
 route_holder_name() {
-  lane_holder_of "$1" "$2" | grep . || printf '%s\n' "$2"
+  lane_holder_of "$1" "$2" | grep . || printf '%s\n' "$2" | tr -cd '[:print:]'
 }
 
 # Note appended to status when the holder's runner is not online.
@@ -324,32 +327,28 @@ route_on() {
       sr_die "$1 routing is held by $(route_holder_name "$1" "$SR_ROUTE_CUR"); use 'self-runner route $1 on --take' to switch"
     fi
   fi
-  gh variable set "$(lane_var "$1")" --body "$(lane_route_value "$1")" --repo "$SR_REPOSITORY"
+  gh variable set "$(lane_var "$1")" --body "$(lane_route_value "$1")" --repo "$SR_REPOSITORY" || return 1
   # GitHub variables have no compare-and-set; re-read to catch a lost race.
   if [ -n "$SR_USER" ] && route_current "$1" && [ "$SR_ROUTE_CUR" != "$(lane_route_value "$1")" ]; then
     sr_die "lost a race: $1 routing is now held by $(route_holder_name "$1" "$SR_ROUTE_CUR")"
   fi
 }
 
-# route_off LANE FORCE: with a user, only release routing this user holds.
-# FORCE=1 clears it whoever holds it (stale or departed holder).
+# route_off LANE FORCE: release routing. With a user, only routing this user
+# holds; FORCE=1 clears it whoever holds it (stale or departed holder). An
+# unreadable variable fails closed, except under FORCE.
 route_off() {
-  if [ "$2" -eq 1 ]; then
-    if route_current "$1" && [ -z "$SR_ROUTE_CUR" ]; then
-      printf '%s: routing already off\n' "$1"
-      return 0
-    fi
-    [ -z "$SR_ROUTE_CUR" ] || err "clearing routing held by $(route_holder_name "$1" "$SR_ROUTE_CUR")"
-  elif [ -n "$SR_USER" ]; then
-    route_current "$1" || return 1
-    if [ -z "$SR_ROUTE_CUR" ]; then
-      printf '%s: routing already off\n' "$1"
-      return 0
-    fi
-    if [ "$SR_ROUTE_CUR" != "$(lane_route_value "$1")" ]; then
-      err "$1 routing is held by $(route_holder_name "$1" "$SR_ROUTE_CUR"); leaving it (admins: route $1 off --force)"
-      return 0
-    fi
+  if ! route_current "$1"; then
+    [ "$2" -eq 1 ] || return 1
+    err "warning: could not read routing for $1; deleting anyway"
+  elif [ -z "$SR_ROUTE_CUR" ]; then
+    printf '%s: routing already off\n' "$1"
+    return 0
+  elif [ "$2" -eq 1 ]; then
+    err "clearing routing held by $(route_holder_name "$1" "$SR_ROUTE_CUR")"
+  elif [ -n "$SR_USER" ] && [ "$SR_ROUTE_CUR" != "$(lane_route_value "$1")" ]; then
+    err "$1 routing is held by $(route_holder_name "$1" "$SR_ROUTE_CUR"); leaving it (admins: route $1 off --force)"
+    return 0
   fi
   gh variable delete "$(lane_var "$1")" --repo "$SR_REPOSITORY"
 }

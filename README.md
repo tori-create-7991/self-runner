@@ -75,11 +75,11 @@ Set `user=auto` (or your login) and each person runs their own runner on their o
 self-runner route ci on            # take duty (refused if someone else holds it)
 self-runner route ci on --take     # switch duty to you
 self-runner route ci off           # release; only deletes routing you hold
-self-runner route ci off --force   # clear routing held by anyone (stale or departed holder)
+self-runner route ci off --force   # clear routing held by anyone (stale or departed holder); proceeds, with a warning, even if the variable cannot be read
 self-runner status                 # also prints who holds routing, and flags an offline holder
 ```
 
-With `auto_route=true`, `self-runner start` takes duty once your runner is online (exit status 1 if it could not) and `stop` releases routing first, waits for the lane to drain, then stops (it aborts if routing cannot be released; `--force` stops anyway). Jobs already queued keep the label they were created with, so the previous holder should stay up until `status` shows idle.
+With `auto_route=true`, `self-runner start` takes duty once your runner is online (exit status 1 if it could not) and `stop` releases routing first, waits up to about a minute for the lane to drain, then stops (it aborts if routing cannot be released or the lane is still busy; `--force` stops anyway; a lane that is not running is stopped without waiting). `stop` waits the same way without `auto_route`. Jobs already queued keep the label they were created with, so the previous holder should stay up until `status` shows idle.
 
 Failures reading the routing variable are never treated as "unset": `route on`/`off` stop and `status` prints `routing unknown`.
 
