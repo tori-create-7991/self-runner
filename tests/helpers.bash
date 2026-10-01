@@ -62,6 +62,13 @@ case "$*" in
     }
     rm -f "$VF"
     ;;
+  "api repos/octo/demo --jq"*)
+    if [ -n "${STUB_REPO_404:-}" ]; then
+      echo "HTTP 404: Not Found" >&2
+      exit 1
+    fi
+    echo octo/demo
+    ;;
   api*"| .status") printf '%s\n' "${STUB_HOLDER_STATUS-}" ;;
   api*) printf '%b\n' "${STUB_GH_REMOTE-42\tci-1\tonline\tfalse\tself-runner-ci}" ;;
 esac

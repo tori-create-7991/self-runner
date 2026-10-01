@@ -152,6 +152,28 @@ teardown() { teardown_env; }
   ! grep -q 'ENV' "$STUB_LOG"
 }
 
+@test "a multi-line routing value cannot smuggle a valid-looking first line past validation" {
+  STUB_VAR=$(printf 'self-runner-ci--alice\n") | $ENV #') run "$CLI" status ci
+  [ "$status" -eq 0 ]
+  ! grep -q 'ENV' "$STUB_LOG"
+  ! grep -q '| .status' "$STUB_LOG"
+}
+
+@test "login validation rejects values with an embedded newline" {
+  sed -i.bak "s#^user=.*#user=alice#" self-runner.conf
+  run sh -c ". '$ROOT/lib/config.sh'; login_ok \"\$(printf 'alice\n\") | x')\""
+  [ "$status" -ne 0 ]
+}
+
+@test "user=none status also strips control characters and caps the length" {
+  sed -i.bak '/^user=/d' self-runner.conf
+  STUB_VAR=$(printf 'bad\033[31mvalue') run "$CLI" status ci
+  [[ "$output" != *$'\033'* ]]
+  long=$(printf 'x%.0s' $(seq 1 200))
+  STUB_VAR=$long run "$CLI" status ci
+  [ "${#output}" -lt 150 ]
+}
+
 @test "control characters in a routing value are stripped before printing" {
   STUB_VAR=$(printf 'bad\033[31mvalue') run "$CLI" status ci
   [[ "$output" != *$'\033'* ]]
@@ -167,6 +189,14 @@ teardown() { teardown_env; }
   STUB_VAR_ERROR=1 run "$CLI" status ci
   [[ "$output" == *"routing unknown"* ]]
   [[ "$output" != *"routing off"* ]]
+}
+
+@test "a 404 for an inaccessible repository is an error, not an unset variable" {
+  STUB_NOTFOUND_404=1 STUB_REPO_404=1 run "$CLI" route ci off
+  [ "$status" -ne 0 ]
+  ! grep -q 'variable delete' "$STUB_LOG"
+  STUB_NOTFOUND_404=1 STUB_REPO_404=1 run "$CLI" status ci
+  [[ "$output" == *"routing unknown"* ]]
 }
 
 @test "route on takes free routing with the personal label" {

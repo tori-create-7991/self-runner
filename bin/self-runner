@@ -279,15 +279,27 @@ route_current() {
     return 0
   fi
   case "$_out" in
-    *"not found"* | *"404"*) return 0 ;;
+    *"was not found"*) return 0 ;;
+    *"404"*)
+      # A 404 also means "repository not visible to this token": only treat it
+      # as an unset variable if the repository itself is reachable.
+      if gh api "repos/$SR_REPOSITORY" --jq .full_name >/dev/null 2>&1; then
+        return 0
+      fi
+      ;;
   esac
   err "cannot read routing variable $(lane_var "$1"): $_out"
   return 1
 }
 
-# Holder login, or the raw value (control characters stripped) if it is not one.
+# Remote values are untrusted: drop non-printable bytes and cap the length.
+route_sanitize() {
+  printf '%s\n' "$1" | LC_ALL=C tr -cd '[:print:]' | cut -c1-80
+}
+
+# Holder login, or the sanitized raw value if it is not one.
 route_holder_name() {
-  lane_holder_of "$1" "$2" | grep . || printf '%s\n' "$2" | tr -cd '[:print:]'
+  lane_holder_of "$1" "$2" | grep . || route_sanitize "$2"
 }
 
 # Note appended to status when the holder's runner is not online.
@@ -308,7 +320,7 @@ route_describe() {
   if [ -z "$cur" ]; then
     printf '%s: routing off (jobs use the fallback runner)\n' "$1"
   elif [ -z "$SR_USER" ]; then
-    printf '%s: routing -> %s\n' "$1" "$cur"
+    printf '%s: routing -> %s\n' "$1" "$(route_sanitize "$cur")"
   elif [ "$cur" = "$(lane_route_value "$1")" ]; then
     printf '%s: routing -> %s (you)\n' "$1" "$cur"
   else

@@ -7,7 +7,13 @@ sr_die() {
   exit 1
 }
 
+# Whole-string match: grep works line by line, so a value with an embedded
+# newline must be rejected up front or one valid line would let it through.
 sr_matches() {
+  case "$2" in
+    *'
+'*) return 1 ;;
+  esac
   printf '%s\n' "$2" | grep -Eq "$1"
 }
 
