@@ -7,7 +7,13 @@ sr_die() {
   exit 1
 }
 
+# Whole-string match: grep works line by line, so a value with an embedded
+# newline must be rejected up front or one valid line would let it through.
 sr_matches() {
+  case "$2" in
+    *'
+'*) return 1 ;;
+  esac
   printf '%s\n' "$2" | grep -Eq "$1"
 }
 
@@ -57,6 +63,59 @@ lane_primary_label() {
   lane_label "$1" | cut -d, -f1
 }
 
+# With a user, the runner is named <login>-<lane>-1 and also carries a personal
+# label <primary>-<login>; that label is what the routing variable points at.
+# "--" joins login and lane: a GitHub login cannot contain it, so two different
+# (login, lane) pairs can never produce the same name or label.
+runner_name_for() {
+  printf '%s--%s-1\n' "$2" "$1"
+}
+
+lane_runner_name() {
+  if [ -n "$SR_USER" ]; then
+    runner_name_for "$1" "$SR_USER"
+  else
+    printf '%s-1\n' "$1"
+  fi
+}
+
+lane_personal_label() {
+  [ -z "$SR_USER" ] || printf '%s--%s\n' "$(lane_primary_label "$1")" "$SR_USER"
+}
+
+# Space-separated labels the runner registers with and status verifies.
+lane_register_labels() {
+  _p=$(lane_personal_label "$1")
+  if [ -n "$_p" ]; then
+    printf '%s %s\n' "$(lane_labels "$1")" "$_p"
+  else
+    lane_labels "$1"
+  fi
+}
+
+# Value written to the routing variable when this user takes the lane.
+lane_route_value() {
+  if [ -n "$SR_USER" ]; then lane_personal_label "$1"; else lane_primary_label "$1"; fi
+}
+
+# Login that holds routing, derived from a personal label; empty if unknown.
+lane_holder_of() {
+  _pre="$(lane_primary_label "$1")--"
+  case "$2" in
+    "$_pre"?*)
+      # The value is attacker-controlled (anyone who can write variables), and
+      # the result is spliced into a jq filter: only a valid login is a holder.
+      login_ok "${2#"$_pre"}" && printf '%s\n' "${2#"$_pre"}"
+      ;;
+  esac
+}
+
+# GitHub logins, plus "_" for Enterprise Managed Users; "--" is reserved as the separator.
+login_ok() {
+  sr_matches '^[A-Za-z0-9]([A-Za-z0-9_-]{0,37}[A-Za-z0-9])?$' "$1" || return 1
+  case "$1" in *--*) return 1 ;; esac
+}
+
 lane_sudo() {
   cfg_get "lane.$1.sudo" false
 }
@@ -91,6 +150,23 @@ cfg_validate() {
 
   scope=$(cfg_get scope repo)
   [ "$scope" = repo ] || sr_die "scope '$scope' is not supported yet (only 'repo')"
+
+  SR_USER_SETTING=$(cfg_get user none)
+  case "$SR_USER_SETTING" in
+    none) SR_USER= ;;
+    auto)
+      command -v gh >/dev/null 2>&1 || sr_die "user=auto needs gh (or set user=<github-login>)"
+      SR_USER=$(gh api user --jq .login 2>/dev/null | tr '[:upper:]' '[:lower:]')
+      [ -n "$SR_USER" ] || sr_die "cannot resolve your GitHub login (run 'gh auth login' or set user=<github-login>)"
+      login_ok "$SR_USER" || sr_die "gh returned an unusable login '$SR_USER'; set user=<github-login>"
+      ;;
+    *)
+      login_ok "$SR_USER_SETTING" || sr_die "invalid user '$SR_USER_SETTING' (none, auto, or a GitHub login)"
+      SR_USER=$(printf '%s' "$SR_USER_SETTING" | tr '[:upper:]' '[:lower:]')
+      ;;
+  esac
+  SR_AUTO_ROUTE=$(cfg_get auto_route false)
+  case "$SR_AUTO_ROUTE" in true | false) ;; *) sr_die "auto_route must be true or false" ;; esac
 
   SR_PROFILE=$(cfg_get colima_profile self-runner)
   sr_matches '^[a-z0-9][a-z0-9-]*$' "$SR_PROFILE" || sr_die "invalid colima_profile '$SR_PROFILE'"
@@ -128,7 +204,7 @@ cfg_validate() {
   # shellcheck disable=SC2013 # keys are whitespace-stripped by awk
   for _k in $(awk '/^[[:space:]]*(#|$)/ { next } { i = index($0, "="); if (i) { k = substr($0, 1, i - 1); gsub(/[[:space:]]/, "", k); print k } }' "$SR_CONFIG"); do
     case "$_k" in
-      repository | scope | colima_profile | docker_context | image_tag | lanes) ;;
+      repository | scope | colima_profile | docker_context | image_tag | lanes | user | auto_route) ;;
       lane.*.label | lane.*.cpus | lane.*.memory | lane.*.pids | lane.*.sudo | lane.*.cap_add | lane.*.devices)
         _n=${_k#lane.}
         _n=${_n%.*}

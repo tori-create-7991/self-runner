@@ -12,7 +12,7 @@ teardown() { teardown_env; }
 @test "help lists commands" {
   run "$CLI" help
   [ "$status" -eq 0 ]
-  [[ "$output" == *"route <lane> on|off"* ]]
+  [[ "$output" == *"route <lane> off [--force]"* ]]
 }
 
 @test "unknown command exits 2" {

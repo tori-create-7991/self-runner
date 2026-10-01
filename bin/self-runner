@@ -31,7 +31,8 @@ commands:
   start [lane]              start registered lanes
   status [lane]             verify lanes are online, idle and labelled on GitHub
   stop [--force] <lane>     stop an idle lane (--force skips the idle check)
-  route <lane> on|off       set/delete the workflow routing variable
+  route <lane> on [--take]      point the routing variable at this runner
+  route <lane> off [--force]    release it (--force: clear whoever holds it)
   version | help
 
 config: --config FILE, \$SELF_RUNNER_CONFIG, or ./self-runner.conf
@@ -88,7 +89,7 @@ tab=$(printf '\t')
 check_lane() {
   lane=$1
   svc=runner-$lane
-  name=$lane-1
+  name=$(lane_runner_name "$lane")
 
   if ! dc ps --status running --services | grep -Fx "$svc" >/dev/null; then
     err "$lane: container is not running"
@@ -119,21 +120,28 @@ check_lane() {
     err "gh is required to verify GitHub runner state"
     return 1
   }
-  for label in $(lane_labels "$lane"); do
-    remote=$(GH_HTTP_TIMEOUT=10 gh api "repos/$SR_REPOSITORY/actions/runners" \
-      --jq ".runners[] | select(.name == \"$name\") | [(.id | tostring), .name, .status, (.busy | tostring), (([.labels[].name] | index(\"$label\")) != null | tostring)] | @tsv") || {
-      err "$lane: cannot query GitHub runner state"
-      return 1
-    }
-    case "$remote" in
-      "${local_id}${tab}${name}${tab}online${tab}false${tab}true") ;;
+  remote=$(GH_HTTP_TIMEOUT=10 gh api --paginate "repos/$SR_REPOSITORY/actions/runners?per_page=100" \
+    --jq ".runners[] | select(.name == \"$name\") | [(.id | tostring), .name, .status, (.busy | tostring), ([.labels[].name] | join(\",\"))] | @tsv") || {
+    err "$lane: cannot query GitHub runner state"
+    return 1
+  }
+  IFS=$tab read -r r_id r_name r_status r_busy r_labels <<EOF
+$remote
+EOF
+  if [ "$r_id" != "$local_id" ] || [ "$r_name" != "$name" ] || [ "$r_status" != online ] || [ "$r_busy" != false ]; then
+    err "$lane: not online and idle on GitHub: ${remote:-missing}"
+    return 1
+  fi
+  for label in $(lane_register_labels "$lane"); do
+    case ",$r_labels," in
+      *",$label,"*) ;;
       *)
-        err "$lane: not online, idle, and labelled $label: ${remote:-missing}"
+        err "$lane: GitHub runner lacks label $label (has: ${r_labels:-none})"
         return 1
         ;;
     esac
   done
-  printf '%s: online, idle, labels %s present\n' "$lane" "$(lane_labels "$lane")"
+  printf '%s: online, idle, labels %s present\n' "$lane" "$(lane_register_labels "$lane")"
 }
 
 lanes_of() {
@@ -196,12 +204,25 @@ cmd_start() {
     else
       boundary='! sudo -n true'
     fi
-    dc run --rm --no-deps --entrypoint /bin/sh "runner-$lane" -c "test -f /runner/.runner && $boundary" ||
-      sr_die "$lane is not registered or has an unexpected privilege boundary; run 'self-runner configure $lane' or rebuild"
+    dc run --rm --no-deps --entrypoint /bin/sh "runner-$lane" -c "test -f /runner/.runner && [ \"\$(jq -r .agentName /runner/.runner)\" = '$(lane_runner_name "$lane")' ] && $boundary" ||
+      sr_die "$lane is not registered as '$(lane_runner_name "$lane")' or has an unexpected privilege boundary; run 'self-runner configure $lane' (after changing user, remove the old runner and its config volume first)"
   done
+  rc=0
   for lane in $(lanes_of "${1:-}"); do
     dc up -d "runner-$lane"
+    if [ "$SR_AUTO_ROUTE" = true ]; then
+      if wait_ready "$lane"; then
+        (route_on "$lane" 0) || {
+          err "$lane started but routing was not taken"
+          rc=1
+        }
+      else
+        err "$lane did not come online in time; run 'self-runner route $lane on' later"
+        rc=1
+      fi
+    fi
   done
+  return "$rc"
 }
 
 cmd_status() {
@@ -209,6 +230,7 @@ cmd_status() {
   rc=0
   for lane in $(lanes_of "${1:-}"); do
     check_lane "$lane" || rc=1
+    route_describe "$lane"
   done
   return "$rc"
 }
@@ -225,35 +247,163 @@ cmd_stop() {
   }
   prepare
   require_lane "$1"
-  if [ "$force" -eq 0 ]; then
-    check_lane "$1" || sr_die "$1 is not confirmed idle; route jobs away and retry, or use --force for incident recovery"
+  if [ "$SR_AUTO_ROUTE" = true ]; then
+    # Release routing first so new jobs stop arriving while the lane drains.
+    if ! route_off "$1" 0; then
+      if [ "$force" -eq 1 ]; then
+        err "warning: could not release routing; it may still point at $1"
+      else
+        sr_die "could not release routing for $1; fix GitHub access or use --force"
+      fi
+    fi
+  elif [ -n "$SR_USER" ] && route_current "$1" && [ "$SR_ROUTE_CUR" = "$(lane_route_value "$1")" ]; then
+    err "warning: routing still points at $1; run 'self-runner route $1 off' or jobs will queue"
+  fi
+  if [ "$force" -eq 0 ] && ! dc ps --status running --services | grep -Fx "runner-$1" >/dev/null; then
+    err "$1 is not running; nothing to drain"
+  elif [ "$force" -eq 0 ]; then
+    wait_ready "$1" || sr_die "$1 is not confirmed online and idle (routing was already released if auto_route=true); retry once it drains, or use --force for incident recovery"
   else
     err "warning: forcing $1 stop without an idle check"
   fi
   dc stop "runner-$1"
 }
 
+# route_current LANE: sets SR_ROUTE_CUR ("" when the variable does not exist).
+# Returns 1 when the state cannot be determined, so callers fail closed instead
+# of treating an API error as "routing is free".
+route_current() {
+  SR_ROUTE_CUR=
+  if _out=$(gh variable get "$(lane_var "$1")" --repo "$SR_REPOSITORY" 2>&1); then
+    SR_ROUTE_CUR=$_out
+    return 0
+  fi
+  case "$_out" in
+    *"was not found"* | *"404"*)
+      # gh reports every 404 on this endpoint as "was not found", including a
+      # repository the token cannot see: only call it unset if the repo is reachable.
+      if gh api "repos/$SR_REPOSITORY" --jq .full_name >/dev/null 2>&1; then
+        return 0
+      fi
+      ;;
+  esac
+  err "cannot read routing variable $(lane_var "$1"): $(route_sanitize "$_out")"
+  return 1
+}
+
+# Remote values are untrusted: drop non-printable bytes and cap the length.
+route_sanitize() {
+  printf '%s\n' "$1" | LC_ALL=C tr -cd '[:print:]' | cut -c1-80
+}
+
+# Holder login, or the sanitized raw value if it is not one.
+route_holder_name() {
+  lane_holder_of "$1" "$2" | grep . || route_sanitize "$2"
+}
+
+# Note appended to status when the holder's runner is not online.
+route_holder_note() {
+  [ -n "$(lane_holder_of "$1" "$2")" ] || return 0
+  _st=$(GH_HTTP_TIMEOUT=10 gh api --paginate "repos/$SR_REPOSITORY/actions/runners?per_page=100" \
+    --jq ".runners[] | select(.name == \"$(runner_name_for "$1" "$(lane_holder_of "$1" "$2")")\") | .status" 2>/dev/null) || return 0
+  [ "$_st" = online ] ||
+    printf ' [runner %s: jobs will queue; use route %s on --take or route %s off --force]' "${_st:-not registered}" "$1" "$1"
+}
+
+route_describe() {
+  if ! route_current "$1"; then
+    printf '%s: routing unknown (cannot query GitHub)\n' "$1"
+    return 0
+  fi
+  cur=$SR_ROUTE_CUR
+  if [ -z "$cur" ]; then
+    printf '%s: routing off (jobs use the fallback runner)\n' "$1"
+  elif [ -z "$SR_USER" ]; then
+    printf '%s: routing -> %s\n' "$1" "$(route_sanitize "$cur")"
+  elif [ "$cur" = "$(lane_route_value "$1")" ]; then
+    printf '%s: routing -> %s (you)\n' "$1" "$cur"
+  else
+    printf '%s: routing -> %s%s\n' "$1" "$(route_holder_name "$1" "$cur")" "$(route_holder_note "$1" "$cur")"
+  fi
+}
+
+# route_on LANE TAKE: take the routing pointer. With a user, another holder is
+# only displaced when TAKE=1 (last writer wins otherwise).
+route_on() {
+  # Routing jobs to a lane that is not idle would leave them queued.
+  check_lane "$1" || sr_die "$1 must be online and idle before routing to it"
+  if [ -n "$SR_USER" ]; then
+    route_current "$1" || sr_die "refusing to change routing while its state is unknown"
+    if [ "$2" -eq 0 ] && [ -n "$SR_ROUTE_CUR" ] && [ "$SR_ROUTE_CUR" != "$(lane_route_value "$1")" ]; then
+      sr_die "$1 routing is held by $(route_holder_name "$1" "$SR_ROUTE_CUR"); use 'self-runner route $1 on --take' to switch"
+    fi
+  fi
+  gh variable set "$(lane_var "$1")" --body "$(lane_route_value "$1")" --repo "$SR_REPOSITORY" || return 1
+  # GitHub variables have no compare-and-set; re-read to catch a lost race.
+  if [ -n "$SR_USER" ] && route_current "$1" && [ "$SR_ROUTE_CUR" != "$(lane_route_value "$1")" ]; then
+    sr_die "lost a race: $1 routing is now held by $(route_holder_name "$1" "$SR_ROUTE_CUR")"
+  fi
+}
+
+# route_off LANE FORCE: release routing. With a user, only routing this user
+# holds; FORCE=1 clears it whoever holds it (stale or departed holder). An
+# unreadable variable fails closed, except under FORCE.
+route_off() {
+  if ! route_current "$1"; then
+    [ "$2" -eq 1 ] || return 1
+    err "warning: could not read routing for $1; deleting anyway"
+  elif [ -z "$SR_ROUTE_CUR" ]; then
+    printf '%s: routing already off\n' "$1"
+    return 0
+  elif [ "$2" -eq 1 ]; then
+    err "clearing routing held by $(route_holder_name "$1" "$SR_ROUTE_CUR")"
+  elif [ -n "$SR_USER" ] && [ "$SR_ROUTE_CUR" != "$(lane_route_value "$1")" ]; then
+    err "$1 routing is held by $(route_holder_name "$1" "$SR_ROUTE_CUR"); leaving it (admins: route $1 off --force)"
+    return 0
+  fi
+  gh variable delete "$(lane_var "$1")" --repo "$SR_REPOSITORY"
+}
+
 cmd_route() {
+  take=0
+  force=0
+  if [ "$#" -eq 3 ]; then
+    case "$2 $3" in
+      "on --take") take=1 ;;
+      "off --force") force=1 ;;
+      *)
+        usage >&2
+        exit 2
+        ;;
+    esac
+    set -- "$1" "$2"
+  fi
   [ "$#" -eq 2 ] || {
     usage >&2
     exit 2
   }
   load
   require_lane "$1"
-  var=$(lane_var "$1")
   case "$2" in
     on)
-      # Routing jobs to a lane that is not idle would leave them queued.
       guard
       render
-      check_lane "$1" || sr_die "$1 must be online and idle before routing to it"
-      gh variable set "$var" --body "$(lane_primary_label "$1")" --repo "$SR_REPOSITORY"
+      route_on "$1" "$take"
       ;;
-    off)
-      gh variable delete "$var" --repo "$SR_REPOSITORY"
-      ;;
-    *) sr_die "usage: self-runner route <lane> on|off" ;;
+    off) route_off "$1" "$force" ;;
+    *) sr_die "usage: self-runner route <lane> on|off [--take|--force]" ;;
   esac
+}
+
+wait_ready() {
+  n=0
+  while [ "$n" -lt "${SR_WAIT_TRIES:-20}" ]; do
+    check_lane "$1" >/dev/null 2>&1 && return 0
+    n=$((n + 1))
+    sleep "${SR_WAIT_SLEEP:-3}"
+  done
+  check_lane "$1" || true
+  return 1
 }
 
 SR_CONFIG=${SELF_RUNNER_CONFIG:-./self-runner.conf}
